@@ -1,0 +1,196 @@
+# Story 412-2-12 段 a：镜像仓 helayD/open-ai-canvas 默认分支 main 上的运维文件。
+# 本文件权威副本在单仓 open-ai-canvas/scripts/mxd/mirror-mxd-vendor-sync.yml，
+# 推到镜像后路径必须是 .github/workflows/mxd-vendor-sync.yml，字节一致。
+#
+# 目的：把 ddcat-ai/open-ai-canvas 的 main 合并进 mxd-vendor 并剥离三项，
+# 再 dispatch 本仓 canvas-mxd-vendor-updated。禁止 merge origin/main / helayD main。
+#
+# 节奏：
+#   - cron 0 1 * * 1  周一 01:00 UTC = 09:00 北京，完整同步
+#   - cron 0 1 * * *  每天 01:00 UTC，只做安全检测，命中则完整同步
+#   - workflow_dispatch reason=weekly|security|manual
+#
+# 参考：AD-19；412-2-12 story；单仓覆盖包 scripts/mxd/sync-mxd-vendor.sh
+
+name: mxd-vendor-sync
+
+on:
+  schedule:
+    - cron: '0 1 * * 1'
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: weekly / security / manual
+        type: choice
+        options: [weekly, security, manual]
+        default: manual
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mxd-vendor-sync
+  cancel-in-progress: false
+
+jobs:
+  sync-vendor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout overlay scripts from private monorepo
+        uses: actions/checkout@v4
+        with:
+          repository: aiworkcysp/ai_flutter_client
+          ref: dest
+          path: ops
+          token: ${{ secrets.AIAUTOCENTER_DISPATCH_TOKEN }}
+          persist-credentials: false
+
+      - name: Checkout mxd-vendor
+        uses: actions/checkout@v4
+        with:
+          ref: mxd-vendor
+          path: vendor
+          token: ${{ github.token }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Decide whether to sync
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REASON="${{ github.event.inputs.reason }}"
+          EVENT="${{ github.event_name }}"
+          SCHEDULE="${{ github.event.schedule }}"
+          DO_SYNC=false
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            DO_SYNC=true
+          elif [ "$SCHEDULE" = "0 1 * * 1" ]; then
+            REASON=weekly
+            DO_SYNC=true
+          else
+            REASON=security
+            mkdir -p /tmp/mxd-sec
+            git -C vendor remote get-url ddcat-upstream >/dev/null 2>&1 || \
+              git -C vendor remote add ddcat-upstream https://github.com/ddcat-ai/open-ai-canvas.git
+            git -C vendor fetch ddcat-upstream main
+            git -C vendor log ddcat-upstream/main --since='7 days ago' --pretty='%h %s' \
+              > /tmp/mxd-sec/log.txt || true
+            python3 -B ops/open-ai-canvas/scripts/mxd/detect_upstream_security.py \
+              --input /tmp/mxd-sec/log.txt > /tmp/mxd-sec/hits.txt || true
+            REL=$(gh api repos/ddcat-ai/open-ai-canvas/releases --jq \
+              '[.[] | select(.published_at != null)] | .[0].name // .[0].tag_name // ""' || true)
+            ADV=$(gh api repos/ddcat-ai/open-ai-canvas/security-advisories --jq 'length' || echo 0)
+            if [ -s /tmp/mxd-sec/hits.txt ] || echo "$REL" | grep -qiE 'security|cve|vulnerab'; then
+              DO_SYNC=true
+            fi
+            echo "releases_latest=$REL"
+            echo "advisories=$ADV"
+          fi
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+          echo "do_sync=$DO_SYNC" >> "$GITHUB_OUTPUT"
+          echo "plan reason=$REASON do_sync=$DO_SYNC" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Bot identity
+        if: steps.plan.outputs.do_sync == 'true'
+        working-directory: vendor
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge ddcat-ai main and strip
+        id: sync
+        if: steps.plan.outputs.do_sync == 'true'
+        working-directory: vendor
+        env:
+          MXD_VENDOR_WORKDIR: ${{ github.workspace }}/vendor
+          MXD_UPSTREAM_URL: https://github.com/ddcat-ai/open-ai-canvas.git
+          MXD_SUBTREE_SPLIT: 577add97f5a0bacf5b1d14cb5b83cb725f2d1df7
+        run: |
+          set -euo pipefail
+          OUT=$(bash ../ops/open-ai-canvas/scripts/mxd/sync-mxd-vendor.sh)
+          echo "$OUT"
+          if echo "$OUT" | grep -q '无变化'; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "无变化 $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "已同步 $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Push mxd-vendor
+        id: push
+        if: steps.plan.outputs.do_sync == 'true' && steps.sync.outputs.changed == 'true'
+        working-directory: vendor
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/helayD/open-ai-canvas.git"
+          git push origin mxd-vendor
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "upstream=$(git rev-parse ddcat-upstream/main 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+          echo "version=$(tr -d '\r\n' < VERSION || echo unknown)" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Dispatch monorepo
+        if: steps.push.outcome == 'success'
+        env:
+          AIAUTOCENTER_DISPATCH_TOKEN: ${{ secrets.AIAUTOCENTER_DISPATCH_TOKEN }}
+        run: |
+          set +e
+          BODY=$(printf '{"event_type":"canvas-mxd-vendor-updated","client_payload":{"mxd_vendor_sha":"%s","upstream_sha":"%s","version":"%s","reason":"%s"}}' \
+            "${{ steps.push.outputs.sha }}" \
+            "${{ steps.push.outputs.upstream }}" \
+            "${{ steps.push.outputs.version }}" \
+            "${{ steps.plan.outputs.reason }}")
+          CODE=$(curl -sS -o /tmp/dispatch.out -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${AIAUTOCENTER_DISPATCH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/aiworkcysp/ai_flutter_client/dispatches \
+            -d "$BODY")
+          set -e
+          if [ "$CODE" != "204" ]; then
+            echo "dispatch HTTP $CODE" >&2
+            TODAY=$(date -u +%F)
+            TITLE="[canvas-upstream] 段 a 已推 mxd-vendor 但 dispatch 失败 ${TODAY}"
+            curl -sS -X POST \
+              -H "Authorization: Bearer ${AIAUTOCENTER_DISPATCH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/aiworkcysp/ai_flutter_client/issues \
+              -d "$(printf '{"title":%s,"body":%s,"labels":["canvas-upstream"]}' \
+                "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$TITLE")" \
+                "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "mxd_vendor_sha=${{ steps.push.outputs.sha }} 段 b 周一兜底。")")"
+          fi
+
+      - name: Notify tree-or-script failure
+        if: failure()
+        env:
+          AIAUTOCENTER_DISPATCH_TOKEN: ${{ secrets.AIAUTOCENTER_DISPATCH_TOKEN }}
+          PLAN_REASON: ${{ steps.plan.outputs.reason }}
+        run: |
+          TODAY=$(date -u +%F)
+          TITLE="[canvas-upstream] 段 a mxd-vendor 同步失败 ${TODAY}"
+          LABELS='["canvas-upstream"]'
+          if [ "$PLAN_REASON" = "security" ]; then
+            LABELS='["canvas-upstream","security","P0"]'
+            TITLE="[P0] 画布上游安全同步失败 ${TODAY}"
+          fi
+          EXIST=$(curl -sS -H "Authorization: Bearer ${AIAUTOCENTER_DISPATCH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/aiworkcysp/ai_flutter_client/issues?state=open&labels=canvas-upstream")
+          echo "$EXIST" | python3 -c "import json,sys; d=json.load(sys.stdin); t=sys.argv[1];
+print('dup' if any(t in i.get('title','') for i in d) else 'new')" "$TODAY" > /tmp/dup.txt
+          if grep -q dup /tmp/dup.txt; then
+            echo "skip duplicate issue"
+            exit 0
+          fi
+          TITLE="$TITLE" LABELS="$LABELS" python3 -c "import json,os; print(json.dumps({'title':os.environ['TITLE'],'body':'见 helayD/open-ai-canvas Actions 日志。','labels':json.loads(os.environ['LABELS'])}))" \
+            > /tmp/issue.json
+          curl -sS -X POST \
+            -H "Authorization: Bearer ${AIAUTOCENTER_DISPATCH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/aiworkcysp/ai_flutter_client/issues \
+            -d @/tmp/issue.json
