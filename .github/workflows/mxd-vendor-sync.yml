@@ -181,8 +181,7 @@ jobs:
           EXIST=$(curl -sS -H "Authorization: Bearer ${AIAUTOCENTER_DISPATCH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/aiworkcysp/ai_flutter_client/issues?state=open&labels=canvas-upstream")
-          echo "$EXIST" | python3 -c "import json,sys; d=json.load(sys.stdin); t=sys.argv[1];
-print('dup' if any(t in i.get('title','') for i in d) else 'new')" "$TODAY" > /tmp/dup.txt
+          echo "$EXIST" | python3 -c 'import json,sys; d=json.load(sys.stdin); t=sys.argv[1]; print("dup" if any(t in i.get("title","") for i in d) else "new")' "$TODAY" > /tmp/dup.txt
           if grep -q dup /tmp/dup.txt; then
             echo "skip duplicate issue"
             exit 0
