@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: aiworkcysp/ai_flutter_client
-          ref: dest
+          ref: dev
           path: ops
           token: ${{ secrets.AIAUTOCENTER_DISPATCH_TOKEN }}
           persist-credentials: false
