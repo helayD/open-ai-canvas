@@ -134,13 +134,15 @@ jobs:
         working-directory: vendor
         run: |
           set -euo pipefail
-          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/helayD/open-ai-canvas.git"
-          git push origin mxd-vendor
+          # 上游历史含 workflow 变更，需 repo + workflow 权限；跨仓令牌不落盘。
+          git -c http.https://github.com/.extraheader= \
+            -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+            push origin HEAD:refs/heads/mxd-vendor
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "upstream=$(git rev-parse ddcat-upstream/main 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
           echo "version=$(tr -d '\r\n' < VERSION || echo unknown)" >> "$GITHUB_OUTPUT"
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AIAUTOCENTER_DISPATCH_TOKEN }}
 
       - name: Dispatch monorepo
         if: steps.push.outcome == 'success'
