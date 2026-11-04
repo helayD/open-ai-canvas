@@ -46,7 +46,7 @@ func (s *Service) deleteUserAssetsWithResources(userID string, ids []string, pur
 	// 删除语义（产品约定，勿收紧）：
 	//   - purge=true 是用户在素材库确认后的「彻底删除」（单个 DELETE、批量删除、清空回收站），
 	//     不因画布、任务、项目或画布历史快照仍引用而拒绝；旧引用随之失效，画布保存时由
-	//     repairMissingResources 修复断链。
+	//     由统一 operations 提交前的资源完整性校验修复断链。
 	//   - purge=false 是内部普通删除：回收站（archived）素材同样直接删除，其余素材保留引用保护。
 	//   - 无论哪种，被其他素材复用的资源与物理对象都保留，物理删除一律经 Outbox 异步执行。
 	deleteReferencedResources := purge
@@ -111,6 +111,12 @@ func (s *Service) deleteUserAssetsWithResources(userID string, ids []string, pur
 		if deleteReferencedResources {
 			// 彻底删除只需要知道哪些资源仍被「其他素材」复用（这些资源要保留），不扫描任务和画布。
 			snapshot, snapshotErr = s.repo.OtherAssetResourceReferences(userID, assetIDs)
+			if snapshotErr == nil {
+				// 短剧表直接持有的媒体同样保留：素材记录只是它在素材库里的入口。
+				var dramaReferences []repository.ResourceDirectReference
+				dramaReferences, snapshotErr = s.repo.DramaResourceReferences(userID, ownedIDs)
+				snapshot.Direct = append(snapshot.Direct, dramaReferences...)
+			}
 		} else {
 			snapshot, snapshotErr = s.repo.ResourceReferenceSnapshotExcludingAssets(userID, assetIDs, ownedIDs)
 		}
@@ -120,7 +126,7 @@ func (s *Service) deleteUserAssetsWithResources(userID string, ids []string, pur
 		sharedAssetResourceIDs := map[string]struct{}{}
 		for _, reference := range snapshot.Direct {
 			if _, exists := ownedIDSet[reference.ResourceID]; exists {
-				if reference.Kind == "素材" {
+				if reference.Kind == "素材" || reference.Kind == repository.DramaResourceReferenceKind {
 					sharedAssetResourceIDs[reference.ResourceID] = struct{}{}
 					continue
 				}
@@ -318,6 +324,12 @@ func (s *Service) deleteStoredResourceObject(userID string, resource *model.Reso
 			return fmt.Errorf("无法读取七牛云 Kodo 配置：%w", err)
 		}
 		return deleteQiniuObject(setting, resource.ObjectKey)
+	case volcengineTOSProvider:
+		setting, err := s.ossSettingForResource(userID, resource)
+		if err != nil {
+			return fmt.Errorf("无法读取火山引擎 TOS 配置：%w", err)
+		}
+		return deleteS3Object(setting, resource.ObjectKey)
 	case s3Provider:
 		setting, err := s.ossSettingForResource(userID, resource)
 		if err != nil {

@@ -3,7 +3,7 @@ import { persist, type PersistStorage, type StorageValue } from "zustand/middlew
 
 import { nanoid } from "nanoid";
 import { sameCanvasContent } from "@/lib/canvas/canvas-content";
-import { canvasAppearanceForTheme, DEFAULT_CANVAS_BACKGROUND_MODE, normalizeCanvasAppearance, readCanvasAppearanceDefault, type CanvasAppearance } from "@/lib/canvas/canvas-appearance";
+import { canvasAppearanceForPreset, DEFAULT_CANVAS_BACKGROUND_MODE, NEW_CANVAS_BACKGROUND_MODE, normalizeCanvasAppearance, readCanvasAppearanceDefault, type CanvasAppearance } from "@/lib/canvas/canvas-appearance";
 import { parseCanvasStorageDocument, rebaseCanvasProjects, serializeCanvasStorageDocument, type CanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
@@ -13,6 +13,7 @@ import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, Viewport
 import type { PrevisScene } from "@/types/previs";
 import type { TimelineProject } from "@/types/timeline";
 import { useSyncProgressStore, type SyncProjectProgress } from "@/stores/use-sync-progress-store";
+import { useThemeStore } from "@/stores/use-theme-store";
 import { recordDiagnosticEvent } from "@/services/diagnostics/client-diagnostics";
 
 export type CanvasProject = {
@@ -151,18 +152,17 @@ function applyCanvasPersistenceJournal(document: CanvasStorageDocument, journal:
 }
 
 async function preserveLocalRebaseConflicts(scope: string, projects: CanvasProject[], conflicts: ReturnType<typeof rebaseCanvasProjects>["conflicts"]) {
-    if (!conflicts.length) return;
+    if (!conflicts.length || getActiveUserScope() !== scope) return;
     const ids = new Set(conflicts.map((conflict) => conflict.projectId || conflict.id));
-    const { preserveCanvasSyncDraftLocked } = await import("@/services/canvas-sync-drafts");
     for (const project of projects.filter((item) => ids.has(item.id))) {
-        const draftCount = await preserveCanvasSyncDraftLocked(project, scope);
-        if (getActiveUserScope() === scope) useSyncProgressStore.getState().setProjectProgress(project.id, {
-            phase: "conflict", errorKind: "conflict", draftCount,
-            message: "其他标签页也修改了此画布，本地版本已保留为草稿",
+        useSyncProgressStore.getState().setProjectProgress(project.id, {
+            phase: "pending",
+            pendingChanges: 1,
+            errorKind: "conflict",
+            message: "其他标签页也修改了此画布，未确认操作会按字段重放",
         });
     }
 }
-
 
 
 function setCanvasLocalPersistenceProgress(projects: CanvasProject[], patch: Partial<SyncProjectProgress>) {
@@ -462,6 +462,11 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
                 if (durableKeys?.length) metadata.generationEffectKeys = [...durableKeys];
                 else delete metadata.generationEffectKeys;
                 nodes.push({ ...rolledBack, metadata });
+            } else {
+                // There is no durable ancestor for a locally-created result.
+                // Preserve it in the recovery snapshot; the effect key makes a
+                // later replay idempotent and the user must not lose the node.
+                nodes.push(node);
             }
             continue;
         }
@@ -506,11 +511,14 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
         chatSessions.push(nextSession);
     }
     if (durableProject && hasUnconfirmedGeneration) {
+        const localConnectionIds = new Set(project.connections.map((connection) => connection.id));
         return {
             ...project,
             nodes,
-            // Connection/active-chat records carry no effect stamp provenance, so keep them fail-closed while any generation entity is unconfirmed.
-            connections: durableProject.connections,
+            // Connection/active-chat records carry no effect stamp provenance. Keep
+            // local connections and append durable-only ones instead of replacing
+            // the whole list and dropping edits made during generation.
+            connections: [...project.connections, ...durableProject.connections.filter((connection) => !localConnectionIds.has(connection.id))],
             chatSessions,
             activeChatId: durableProject.activeChatId,
         };
@@ -676,8 +684,8 @@ export const useCanvasStore = create<CanvasStore>()(
                     connections: [],
                     chatSessions: [],
                     activeChatId: null,
-                    appearance: appearanceDefault?.appearance ?? canvasAppearanceForTheme(DEFAULT_CANVAS_COLOR_THEME),
-                    backgroundMode: appearanceDefault?.backgroundMode || DEFAULT_CANVAS_BACKGROUND_MODE,
+                    appearance: appearanceDefault?.appearance ?? canvasAppearanceForPreset(useThemeStore.getState().theme),
+                    backgroundMode: appearanceDefault?.backgroundMode || NEW_CANVAS_BACKGROUND_MODE,
                     showImageInfo: false,
                     viewport: initialViewport,
                     previsScenes: [],

@@ -109,7 +109,11 @@ func (s *Service) cloudAgentPiModel(ctx context.Context, userID, runID string, p
 	var correction []map[string]any
 	for attempt := 0; attempt <= cloudAgentModelStepRetries; attempt++ {
 		if attempt > 0 {
-			delay := time.Duration(1<<(attempt-1)) * time.Second
+			base := s.cloudAgentModelRetryBase
+			if base <= 0 {
+				base = time.Second
+			}
+			delay := time.Duration(1<<(attempt-1)) * base
 			log.Printf("[Agent] model step retry run=%s attempt=%d/%d after %s: %v", runID, attempt, cloudAgentModelStepRetries, delay, lastErr)
 			select {
 			case <-ctx.Done():
@@ -248,6 +252,8 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 		if historyErr != nil {
 			return nil, false, historyErr
 		}
+		softReadGuard := state.ReadLoopNudge && !compactionSummary
+		softReadToolName, softReadCount := state.ReadLoopToolName, state.ReadLoopCount
 		if len(canonical.Messages) == 0 {
 			return nil, false, fmt.Errorf("no canonical messages")
 		}
@@ -263,6 +269,17 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 		if len(correction) > 0 {
 			// 纠偏上下文只用于这一次请求，不写回运行状态，避免下一步重复出现。
 			canonical.Messages = append(append([]map[string]any(nil), canonical.Messages...), correction...)
+		}
+		if softReadGuard {
+			// 只过滤本次请求，不回写长期工具目录；内部压缩不消耗纠偏机会。
+			cloudAgentApplyReadLoopNudge(&canonical, &state)
+		}
+		if !compactionSummary {
+			cloudAgentAttachRunContext(&canonical, &state)
+			budget := s.cloudAgentContextBudgetForRequest(state.Request)
+			if err := fitCloudAgentModelContext(&canonical, budget.InputBudgetTokens); err != nil {
+				return nil, false, err
+			}
 		}
 		// 看图后的历史里有 resource: 图片占位，必须随请求带上获准图片清单，
 		// 否则预检以「模型协议引用了未获准的图片」拒绝（见 cloud_agent_pi_image_references.go）。
@@ -298,9 +315,21 @@ func (s *Service) runCloudAgentModelStep(ctx context.Context, userID, runID stri
 			LogicalModelID: state.Request.LogicalModelID,
 			Input:          input,
 		}
+		if softReadGuard {
+			state.ReadLoopNudge = false
+			state.ReadLoopToolName = ""
+			state.ReadLoopCount = 0
+		}
 		err = s.enqueueCloudAgentTask(run, &state, req, nil)
 		if errors.Is(err, repository.ErrCreationConflict) {
 			state.ActiveTaskID = ""
+			if softReadGuard {
+				// The CAS lost before the checkpoint was written. Preserve the
+				// one-shot guard for the retry so a conflict cannot reopen the loop.
+				state.ReadLoopNudge = true
+				state.ReadLoopToolName = firstNonEmpty(softReadToolName, "只读工具")
+				state.ReadLoopCount = max(1, softReadCount)
+			}
 			time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
 			continue
 		}
@@ -413,26 +442,21 @@ func (s *Service) adoptCloudAgentPiModelStep(userID, runID, taskID string) (adop
 }
 
 func cloudAgentPiCanonicalForModelRequest(messages []map[string]any, existing canonicalAgentRequest) (canonicalAgentRequest, error) {
-	compactionSummaryRequest := cloudAgentPiCompactionSummaryRequest(messages)
-	if !compactionSummaryRequest {
-		// 审批暂停会留下没有结果的并行工具调用，先补齐再转换（见 cloud_agent_pi_unanswered_calls.go）。
-		messages = repairRuntimeUnansweredCalls(messages)
+	if cloudAgentPiCompactionSummaryRequest(messages) {
+		return canonicalFromRuntimeMessages(messages, nil, "")
 	}
-	tools, systemPrompt := existing.Tools, existing.SystemPrompt
-	if compactionSummaryRequest {
-		tools, systemPrompt = nil, ""
+	// 工具调用与结果的配对问题在这里修平（见 cloud_agent_pi_unanswered_calls.go）。
+	// 运行时历史仍不可用时退回服务端历史，不能让整轮失败：失败的会话会被下一轮继承。
+	messages = repairRuntimeUnansweredCalls(messages, existing.Messages)
+	canonical, runtimeErr := canonicalFromRuntimeMessages(messages, existing.Tools, existing.SystemPrompt)
+	if runtimeErr == nil {
+		runtimeErr = validateRuntimeMessagesForModel(messages)
 	}
-	canonical, conversionErr := canonicalFromRuntimeMessages(messages, tools, systemPrompt)
-	if conversionErr != nil {
-		return canonicalAgentRequest{}, conversionErr
-	}
-	if compactionSummaryRequest {
-		return canonical, nil
-	}
-	if err := validateRuntimeMessagesForModel(messages); err != nil {
+	if runtimeErr != nil {
 		if len(existing.Messages) == 0 {
-			return canonicalAgentRequest{}, err
+			return canonicalAgentRequest{}, runtimeErr
 		}
+		log.Printf("[Agent] runtime transcript unusable, using server history: %v", runtimeErr)
 		existing.Messages = repairCanonicalUnansweredCalls(existing.Messages)
 		return existing, nil
 	}
@@ -501,6 +525,10 @@ func (s *Service) cloudAgentModelTaskRetryable(taskID string) bool {
 		return false
 	}
 	if cloudAgentEmptyModelOutput(task) || cloudAgentStepTimedOut(task) {
+		return true
+	}
+	// 域名解析失败发生在连接建立前，请求未送达上游，多为 DNS 抖动，按网络错误重试。
+	if diagnostic := taskExecutionDiagnostic(task); diagnostic != nil && diagnostic.Code == string(ReasonUpstreamDNSFailed) {
 		return true
 	}
 	call, err := s.repo.LatestAPICallForTask(taskID)

@@ -41,6 +41,56 @@ type ArkPrivateAssetBinding struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
+// ArkPortraitSession 是一次方舟真人认证（H5 活体）会话。State 是回调地址里的一次性随机凭据，
+// BytedToken 加密保存，30 分钟内用于换取本次认证创建的真人素材组 ID。
+type ArkPortraitSession struct {
+	ID               string    `json:"id" gorm:"primaryKey;size:36"`
+	UserID           string    `json:"userId" gorm:"index;size:36"`
+	State            string    `json:"-" gorm:"uniqueIndex;size:64"`
+	Name             string    `json:"name" gorm:"size:80"`
+	Site             string    `json:"site" gorm:"size:24"`
+	Region           string    `json:"region" gorm:"size:40"`
+	ProjectName      string    `json:"projectName" gorm:"size:160"`
+	BytedTokenCipher string    `json:"-" gorm:"type:text"`
+	Status           string    `json:"status" gorm:"index;size:24"`
+	ResultCode       string    `json:"resultCode,omitempty" gorm:"size:40"`
+	GroupID          string    `json:"groupId,omitempty" gorm:"size:120"`
+	Error            string    `json:"error,omitempty" gorm:"size:1000"`
+	ExpiresAt        time.Time `json:"expiresAt" gorm:"index"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+// ArkPortraitGroup 是用户名下的一个真人素材组（方舟 LivenessFace Asset Group），每组对应一位真人。
+// 方舟凭据和 ProjectName 由管理员统一配置；组归属于完成认证的用户，其他用户不能读取或引用。
+type ArkPortraitGroup struct {
+	ID          string    `json:"id" gorm:"primaryKey;size:36"`
+	UserID      string    `json:"userId" gorm:"index;size:36"`
+	Name        string    `json:"name" gorm:"size:80"`
+	Site        string    `json:"site" gorm:"size:24"`
+	Region      string    `json:"region" gorm:"size:40"`
+	ProjectName string    `json:"projectName" gorm:"uniqueIndex:idx_ark_portrait_group_project,priority:1;size:160"`
+	GroupID     string    `json:"groupId" gorm:"uniqueIndex:idx_ark_portrait_group_project,priority:2;size:120"`
+	Source      string    `json:"source" gorm:"size:24"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+// ArkPortraitAsset 是上传到真人素材组的一份素材；方舟比对面部一致性后才变为 active。
+type ArkPortraitAsset struct {
+	ID         string    `json:"id" gorm:"primaryKey;size:36"`
+	UserID     string    `json:"userId" gorm:"index;size:36"`
+	GroupID    string    `json:"groupId" gorm:"index;size:36"`
+	ResourceID string    `json:"resourceId" gorm:"index;size:36"`
+	ArkAssetID string    `json:"arkAssetId" gorm:"index;size:120"`
+	AssetType  string    `json:"assetType" gorm:"size:16"`
+	Name       string    `json:"name" gorm:"size:120"`
+	Status     string    `json:"status" gorm:"index;size:24"`
+	Error      string    `json:"error,omitempty" gorm:"size:1000"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
 type UserOSSSetting struct {
 	ID        string    `json:"id" gorm:"primaryKey;size:36"`
 	UserID    string    `json:"userId" gorm:"index;size:36;index:idx_user_oss_settings_user_created,priority:1"`
@@ -149,17 +199,27 @@ type SkillLibraryCategory struct {
 }
 
 type UserSkillState struct {
-	ID                 string    `json:"id" gorm:"primaryKey;size:36"`
-	UserID             string    `json:"userId" gorm:"index;size:36;uniqueIndex:idx_user_skill_state_user_skill,priority:1"`
-	SkillID            string    `json:"skillId" gorm:"size:36;index;uniqueIndex:idx_user_skill_state_user_skill,priority:2"`
-	LibraryCategoryID  string    `json:"libraryCategoryId" gorm:"size:36;index"`
-	InstalledVersionID string    `json:"installedVersionId" gorm:"size:36;index"`
-	AutoUpdate         bool      `json:"autoUpdate"`
-	Added              bool      `json:"added" gorm:"index"`
-	Liked              bool      `json:"liked" gorm:"index"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
+	ID                 string `json:"id" gorm:"primaryKey;size:36"`
+	UserID             string `json:"userId" gorm:"index;size:36;uniqueIndex:idx_user_skill_state_user_skill,priority:1"`
+	SkillID            string `json:"skillId" gorm:"size:36;index;uniqueIndex:idx_user_skill_state_user_skill,priority:2"`
+	LibraryCategoryID  string `json:"libraryCategoryId" gorm:"size:36;index"`
+	InstalledVersionID string `json:"installedVersionId" gorm:"size:36;index"`
+	AutoUpdate         bool   `json:"autoUpdate"`
+	Added              bool   `json:"added" gorm:"index"`
+	Liked              bool   `json:"liked" gorm:"index"`
+	// AgentMode 为空或 auto 时 Agent 可以自动发现该技能；manual 只在用户点名或固定时使用。
+	AgentMode string `json:"agentMode,omitempty" gorm:"size:16"`
+	// AgentUseCount / AgentLastUsedAt 只记录 Agent 实际读取，用于决定目录里谁优先列出。
+	AgentUseCount   int64      `json:"agentUseCount"`
+	AgentLastUsedAt *time.Time `json:"agentLastUsedAt,omitempty"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	UpdatedAt       time.Time  `json:"updatedAt"`
 }
+
+const (
+	UserSkillAgentModeAuto   = "auto"
+	UserSkillAgentModeManual = "manual"
+)
 
 type Tool struct {
 	ID            int64     `json:"id" gorm:"primaryKey;autoIncrement"`

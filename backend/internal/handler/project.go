@@ -10,7 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func RegisterProjectRoutes(r *gin.RouterGroup, svc *service.Service) {
+// RegisterLibraryRoutes 注册画布和短剧共用的个人资料库（画风、声音、角色），不受短剧功能开关限制。
+func RegisterLibraryRoutes(r *gin.RouterGroup, svc *service.Service) {
 	RegisterStyleProfileRoutes(r, svc)
 	r.GET("/voice-profiles", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
@@ -25,10 +26,16 @@ func RegisterProjectRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"profiles": profiles})
 	})
+	registerCharacterLibraryRoutes(r, svc)
+}
+
+// RegisterProjectRoutes 注册短剧项目接口，调用方负责挂短剧功能开关。
+func RegisterProjectRoutes(r *gin.RouterGroup, svc *service.Service) {
 	registerProjectCoreRoutes(r, svc)
 	registerProjectUnitRoutes(r, svc)
 	registerProjectAssetRoutes(r, svc)
 	registerProjectWorkflowRoutes(r, svc)
+	registerDramaRoutes(r, svc)
 }
 
 // parsePositiveQueryInt 解析列表查询里的正整数。分页和筛选查询名统一用 camelCase：page、pageSize、projectId、folderId、mediaType、unitId。

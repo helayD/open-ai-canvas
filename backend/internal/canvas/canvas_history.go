@@ -30,6 +30,25 @@ func SaveDocumentWithHistory(repo *repository.Repository, before *model.CanvasPr
 	if err := assets.CollectOwnedDocumentReferences(after.PayloadJSON, refs); err != nil {
 		return err
 	}
+	if len(resourceIDs) > 0 {
+		resources, err := repo.ResourcesForUserIDs(after.UserID, resourceIDs)
+		if err != nil {
+			return err
+		}
+		ready := make(map[string]struct{}, len(resources))
+		for _, resource := range resources {
+			if resource.Status == model.ResourceStatusReady {
+				ready[resource.ID] = struct{}{}
+			}
+		}
+		retained := resourceIDs[:0]
+		for _, id := range resourceIDs {
+			if _, exists := ready[id]; exists {
+				retained = append(retained, id)
+			}
+		}
+		resourceIDs = retained
+	}
 	return repo.SaveCanvasWithSnapshot(after, snapshot, resourceIDs, assets.SortedIDs(refs), after.UpdatedAt.Add(-canvasHistoryInterval), canvasHistoryLimit, reason == "before_restore" || reason == "before_resource_repair")
 }
 
@@ -40,7 +59,7 @@ func (s *Service) RepairUserCanvasProject(userID string, raw json.RawMessage) (U
 }
 
 func canvasRevisionConflict() error {
-	return kernel.NewAppError(http.StatusConflict, "云端画布已有更新，已停止覆盖；请保留本地草稿并加载最新版本")
+	return kernel.NewAppError(http.StatusConflict, "云端画布已有更新，未确认操作会保留并按原请求自动重放")
 }
 
 type CanvasHistoryList struct {

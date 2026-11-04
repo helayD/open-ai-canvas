@@ -6,6 +6,8 @@ import type { FeatureAvailability } from "@/stores/use-user-store";
 import { http, apiBaseURL } from "@/services/api/request";
 import type { OSSConnectionTestInput, OSSConnectionTestResult, OSSProvider, S3Preset } from "@/lib/oss-settings";
 import type { VerificationPolicy } from "./verification";
+import type { AccountFileStorageUsage } from "@/services/api/resources";
+import type { PublicUserGroup } from "@/services/api/user-groups";
 
 let authSessionRequest: Promise<AuthSessionPayload> | null = null;
 let authSessionCache: { payload: AuthSessionPayload; expiresAt: number } | null = null;
@@ -23,11 +25,16 @@ export type LocalUser = {
     phoneVerifiedAt?: string;
     displayName: string;
     avatarUrl?: string;
+    avatarMode?: "custom" | "default" | "";
+    avatarPreset?: string;
     identityProvider?: string;
     identityId?: string;
     identityUsername?: string;
     role: "admin" | "user";
     status: "active" | "disabled";
+    isPromoter?: boolean;
+    /** 分组编码；空串属于 default 分组。 */
+    userGroup?: string;
     lastLoginAt?: string;
     createdAt: string;
     updatedAt: string;
@@ -36,6 +43,9 @@ export type LocalUser = {
 export type AdminUser = LocalUser & {
     availableMicrocredits: number;
     reservedMicrocredits: number;
+    /** 仅用户列表返回：累计充值到账积分与累计已结算消耗。 */
+    rechargedMicrocredits?: number;
+    consumedMicrocredits?: number;
 };
 
 export type AuthSessionPayload = {
@@ -43,6 +53,10 @@ export type AuthSessionPayload = {
     runtimeLimits?: RuntimeLimits;
     drawingEngine?: CanvasDrawingEngineSetting;
     features?: FeatureAvailability;
+    /** 当前账号能否进入推广中心；由后台推广设置和推广人标记共同决定。 */
+    referralAvailable?: boolean;
+    /** 当前账号所属分组的展示信息；分组配置缺失时为空。 */
+    userGroup?: PublicUserGroup | null;
 };
 
 export type RuntimeLimits = {
@@ -64,12 +78,15 @@ export type ApiCallLog = {
     mediaStage?: GenerationTask["mediaStage"];
     billingOrderId?: string;
     billingStatus?: BillingOrder["status"];
-    billingAmountMicrocredits: number;
+    /** 订单预授权额；与实收分列，未结算时不能当成扣费额。 */
+    billingReservedMicrocredits: number;
+    /** 仅已结算订单返回实收。 */
+    billingSettledMicrocredits?: number;
     billingAvailable: boolean;
     source: string;
     capability: "text" | "image" | "video" | "audio" | "";
     operation?: string;
-    requestKind: "create" | "poll" | "download" | "upload" | "local_save" | "register" | "repair" | "";
+    requestKind: "create" | "poll" | "download" | "upload" | "local_save" | "local_fallback" | "offload" | "register" | "repair" | "";
     billable: boolean;
     apiFormat: string;
     method: string;
@@ -139,6 +156,8 @@ export type AdminUserDetail = {
     storedFileBytes: number;
     dailyUploadBytes: number;
     quota: RuntimeResourcePolicy;
+    /** 包含已购扩容的有效容量与超额状态。 */
+    storageCapacity: AccountFileStorageUsage;
 };
 
 export type AdminUserTask = {
@@ -189,18 +208,18 @@ export type AdminAnalytics = {
         p95DurationMs: number;
         currentQueuedTasks: number;
         totalBalanceMicrocredits?: number;
-        totalConsumedMicrocredits?: number;
         finance?: AnalyticsFinance | null;
     };
-    trend: Array<{ day: string; tasks: number; requests: number; activeUsers: number; requestSuccessRate: number; consumedMicrocredits?: number }>;
+    /** 成功率为 null 表示当天没有已完成的请求，不是 0%。consumedMicrocredits 为已结算订单实收。 */
+    trend: Array<{ day: string; tasks: number; requests: number; activeUsers: number; requestSuccessRate: number | null; consumedMicrocredits: number }>;
     models: Array<{
         model: string;
         capability: string;
         tasks: number;
         requests: number;
         uniqueUsers: number;
-        taskSuccessRate: number;
-        requestSuccessRate: number;
+        taskSuccessRate: number | null;
+        requestSuccessRate: number | null;
         p50DurationMs: number;
         p95DurationMs: number;
         inputTokens: number;
@@ -307,6 +326,12 @@ export type AdminOSSSetting = {
 
 export type AdminArkPrivateAssetSetting = {
     enabled: boolean;
+    /** 开放用户级真人认证素材库，与可信素材自动同步相互独立。 */
+    portraitEnabled: boolean;
+    /** 方舟站点：火山引擎或 BytePlus 海外站，决定控制面域名。 */
+    site: "volcengine" | "byteplus";
+    /** 真人认证回调使用的站点公网根地址；为空时后端使用 CANVAS_PUBLIC_BASE_URL。 */
+    callbackBaseUrl: string;
     region: string;
     projectName: string;
     accessKeyId: string;
@@ -441,7 +466,25 @@ export function getAdminFeatureAvailability() {
 }
 
 export function updateAdminFeatureAvailability(
-    features: Partial<Pick<FeatureAvailability, "welcomeEnabled" | "shortDramaEnabled" | "taskCenterEnabled" | "creditsEnabled" | "customChannelsEnabled" | "frontendModelsEnabled" | "pluginCenterEnabled" | "systemPluginsVisibleToUsers" | "inspirationSourcesVisible">>,
+    features: Partial<
+        Pick<
+            FeatureAvailability,
+            | "welcomeEnabled"
+            | "shortDramaEnabled"
+            | "taskCenterEnabled"
+            | "creditsEnabled"
+            | "customChannelsEnabled"
+            | "frontendModelsEnabled"
+            | "pluginCenterEnabled"
+            | "systemPluginsVisibleToUsers"
+            | "inspirationSourcesVisible"
+            | "imageWorkbenchEnabled"
+            | "videoWorkbenchEnabled"
+            | "ecommerceEnabled"
+            | "ecommerceVideoEnabled"
+            | "siteAssistantEnabled"
+        >
+    >,
 ) {
     return http.patch<{ features: FeatureAvailability }>("/admin/settings/features", features);
 }
@@ -465,7 +508,7 @@ export function resetPassword(input: { email: string; emailCode: string; passwor
     return http.post<{ reset: boolean }>("/auth/password-reset", input);
 }
 
-export async function register(input: { username: string; email?: string; emailCode?: string; phone?: string; smsCode?: string; ticket?: string; displayName?: string; password: string; acceptedTerms: boolean }) {
+export async function register(input: { username: string; email?: string; emailCode?: string; phone?: string; smsCode?: string; ticket?: string; displayName?: string; password: string; acceptedTerms: boolean; referralCode?: string }) {
     const result = await http.post<{ user: LocalUser }>("/auth/register", input);
     invalidateAuthSessionCache();
     return result;
@@ -477,13 +520,13 @@ export async function logout() {
     return result;
 }
 
-export type AdminListParams = { keyword?: string; status?: string; role?: string; page?: number; pageSize?: number };
+export type AdminListParams = { keyword?: string; status?: string; role?: string; group?: string; page?: number; pageSize?: number };
 
 export function listAdminUsers(params: AdminListParams = {}) {
     return http.get<{ users: AdminUser[]; total: number; page: number; pageSize: number }>("/admin/users", { params });
 }
 
-export function createAdminUser(input: { username: string; displayName: string; email?: string; password: string; role: LocalUser["role"]; status: LocalUser["status"] }) {
+export function createAdminUser(input: { username: string; displayName: string; email?: string; password: string; role: LocalUser["role"]; status: LocalUser["status"]; userGroup?: string }) {
     return http.post<{ user: AdminUser }>("/admin/users", input);
 }
 
@@ -507,7 +550,7 @@ export function listAdminUserAuditEvents(id: string, params: { page?: number; pa
     return http.get<{ events: AdminAuditEvent[]; total: number; page: number; pageSize: number }>(`/admin/users/${encodeURIComponent(id)}/audit-events`, { params });
 }
 
-export function updateAdminUser(id: string, input: Partial<Pick<LocalUser, "displayName" | "email" | "role" | "status">> & { password?: string }) {
+export function updateAdminUser(id: string, input: Partial<Pick<LocalUser, "displayName" | "email" | "role" | "status" | "isPromoter" | "userGroup">> & { password?: string }) {
     return http.patch<{ user: LocalUser }>(`/admin/users/${encodeURIComponent(id)}`, input);
 }
 
@@ -529,6 +572,18 @@ export function createAdminChannel(input: Partial<ModelChannel> & { useGlobalCon
 
 export function duplicateAdminChannel(id: string) {
     return http.post<{ channel: ModelChannel }>(`/admin/channels/${encodeURIComponent(id)}/duplicate`);
+}
+
+/** 系统渠道导出文件：不含 API Key、Secret Key、自定义请求头和代理地址。 */
+export type SystemChannelExport = { format: string; version: number; exportedAt: string; channels: Array<{ name: string; models: unknown[] } & Record<string, unknown>> };
+export type SystemChannelImportResult = { createdChannels: string[]; updatedChannels: string[]; savedModels: number; errors: string[] };
+
+export function exportAdminChannels(ids?: string[]) {
+    return http.post<SystemChannelExport>("/admin/channels/export", { ids: ids || [] });
+}
+
+export function importAdminChannels(payload: SystemChannelExport) {
+    return http.post<SystemChannelImportResult>("/admin/channels/import", payload);
 }
 
 export function updateAdminChannel(id: string, input: Partial<ModelChannel> & { useGlobalConcurrency?: boolean }) {
@@ -611,7 +666,7 @@ export function updateAdminDrawingEngineSetting(input: Pick<CanvasDrawingEngineS
     return http.patch<{ setting: CanvasDrawingEngineSetting }>("/admin/settings/drawing-engine", input);
 }
 
-export type AdminApiLogParams = AdminListParams & { recordType?: "request" | "download" | "all"; capability?: "text" | "image" | "video" | "audio" };
+export type AdminApiLogParams = AdminListParams & Pick<AnalyticsFilters, "from" | "to" | "userId" | "model" | "channelId"> & { recordType?: "request" | "download" | "all"; capability?: "text" | "image" | "video" | "audio" };
 
 export function listAdminApiLogs(params: AdminApiLogParams = {}) {
     return http.get<{ logs: ApiCallLog[]; total: number; page: number; pageSize: number }>("/admin/api-logs", { params });
@@ -629,6 +684,10 @@ export function recoverAdminApiLogVideoByURL(id: string, url: string, providerRe
     return http.post<AdminProviderTaskQueryResult>(`/admin/api-logs/${encodeURIComponent(id)}/recover-url`, { url, providerRequestId }, { timeout: 120_000 });
 }
 
+/** 重新保存“作品已生成但保存失败”的任务。订单已退款时必须选择补扣（charge）或免除（waive）。 */
+export function recoverAdminApiLogTaskMedia(id: string, refundedBilling?: "charge" | "waive") {
+    return http.post<{ task: GenerationTask }>(`/admin/api-logs/${encodeURIComponent(id)}/recover-media`, refundedBilling ? { refundedBilling } : undefined);
+}
 export function batchRecoverAdminApiLogs(ids: string[]) {
     return http.post<{ items: Array<{ logId: string; recovered: boolean; providerStatus?: string; error?: string }>; success: number; failed: number; skipped: number }>("/admin/api-logs/recover-batch", { ids }, { timeout: 180_000 });
 }

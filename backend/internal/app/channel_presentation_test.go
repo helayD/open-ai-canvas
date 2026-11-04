@@ -45,11 +45,11 @@ func TestChannelPresentationUsesModelLabelsAndPublicOrder(t *testing.T) {
 	if err != nil || len(search) != 1 {
 		t.Fatalf("name search: %v %v", search, err)
 	}
-	catalog, err := svc.publicSystemChannelCatalog(nil)
+	catalog, err := svc.publicSystemChannelCatalog(testGroupAccess(svc), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog) != 2 || catalog[0].ID != "second" || catalog[0].Name != "渠道second" || catalog[0].DisplayName != "渠道second" {
+	if len(catalog) != 2 || catalog[0].ID != "second" || catalog[0].Name != "" || catalog[0].DisplayName != "" {
 		t.Fatalf("public catalog: %#v", catalog)
 	}
 	legacy, err := svc.PublicSystemChannels()
@@ -73,8 +73,8 @@ func TestChannelPresentationUsesModelLabelsAndPublicOrder(t *testing.T) {
 	if _, err := svc.UpdateSystemChannel(admin, "second", ChannelRequest{SortOrder: intPtr(0)}); err != nil {
 		t.Fatal(err)
 	}
-	catalog, err = svc.publicSystemChannelCatalog(nil)
-	if err != nil || catalog[0].Name != "渠道second" {
+	catalog, err = svc.publicSystemChannelCatalog(testGroupAccess(svc), nil)
+	if err != nil || catalog[0].Name != "" || catalog[0].DisplayName != "" {
 		t.Fatalf("channel name: %v %v", catalog, err)
 	}
 	for _, invalid := range []int{-1, 1000000} {
@@ -126,7 +126,7 @@ func TestChannelModelSortPreservesConfigurationAndOwnership(t *testing.T) {
 	if channel.ModelsJSON != `["a","b","z"]` {
 		t.Fatalf("legacy models order: %s", channel.ModelsJSON)
 	}
-	catalog, err := svc.publicSystemChannelCatalog(nil)
+	catalog, err := svc.publicSystemChannelCatalog(testGroupAccess(svc), nil)
 	if err != nil || len(catalog) != 1 || catalog[0].Models[2].ModelKey != "z" {
 		t.Fatalf("public model order: %v %v", catalog, err)
 	}
