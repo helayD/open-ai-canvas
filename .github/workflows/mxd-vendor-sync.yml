@@ -38,14 +38,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout overlay scripts from private monorepo
-        uses: actions/checkout@v4
-        with:
-          repository: aiworkcysp/ai_flutter_client
-          ref: dev
-          path: ops
-          token: ${{ secrets.AIAUTOCENTER_DISPATCH_TOKEN }}
-          persist-credentials: false
+      - name: Download overlay scripts from private monorepo
+        env:
+          GH_TOKEN: ${{ secrets.AIAUTOCENTER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          OPS_SHA=$(gh api repos/aiworkcysp/ai_flutter_client/commits/dev --jq .sha)
+          SCRIPT_DIR=ops/open-ai-canvas/scripts/mxd
+          mkdir -p "$SCRIPT_DIR"
+          # 固定同一提交，只取任务所需脚本，避免无关 gitlink 的 checkout 清理错误。
+          for SCRIPT in sync-mxd-vendor.sh detect_upstream_security.py; do
+            gh api -H 'Accept: application/vnd.github.raw+json' \
+              "repos/aiworkcysp/ai_flutter_client/contents/open-ai-canvas/scripts/mxd/${SCRIPT}?ref=${OPS_SHA}" \
+              > "$SCRIPT_DIR/$SCRIPT"
+          done
+          echo "overlay scripts commit=$OPS_SHA" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout mxd-vendor
         uses: actions/checkout@v4
