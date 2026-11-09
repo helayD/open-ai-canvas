@@ -9,27 +9,13 @@ import { WorkspaceAccountMenu } from "@/components/layout/workspace-account-menu
 import { WorkspaceCreditGiftMark } from "@/components/layout/workspace-credit-gift-mark";
 import { WorkspaceTopBarExtensionSlot } from "@/components/layout/workspace-top-bar-extension";
 import { AnimatedThemeToggler } from "@/components/ui/animated-theme-toggler";
+import { LanguageMenu } from "@/components/layout/language-menu";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { useWalletBalance } from "@/hooks/use-wallet-balance";
 import { openWorkspaceWallet } from "@/lib/workspace-wallet";
-
-const PAGE_TITLE_KEYS: Record<string, string> = {
-    home: "nav.pageTitles.home",
-    create: "nav.pageTitles.home",
-    projects: "nav.pageTitles.projects",
-    canvas: "nav.pageTitles.canvas",
-    tasks: "nav.pageTitles.tasks",
-    assets: "nav.pageTitles.assets",
-    skills: "nav.pageTitles.skills",
-    plugins: "nav.pageTitles.plugins",
-    settings: "nav.pageTitles.settings",
-};
-const TOOLBOX_TITLE_KEYS: Record<string, string> = {
-    image: "nav.pageTitles.toolboxImage",
-    video: "nav.pageTitles.toolboxVideo",
-};
+import { workspacePageTitleKey } from "@/lib/workspace-page-title";
 
 export function WorkspaceTopBar({ sidebarOpen, onToggleSidebar }: { sidebarOpen: boolean; onToggleSidebar: () => void }) {
     const brandName = useAppearanceStore((state) => state.appearance.brandName);
@@ -40,10 +26,8 @@ export function WorkspaceTopBar({ sidebarOpen, onToggleSidebar }: { sidebarOpen:
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
     const { availableMicrocredits } = useWalletBalance(user?.id, creditsEnabled);
     const { pathname } = useLocation();
-    const [slug, subSlug] = pathname.split("/").filter(Boolean);
-    // /toolbox/image 和 /toolbox/video 共用 toolbox 首段，标题按第二段区分。
-    const sectionKey = slug === "toolbox" ? TOOLBOX_TITLE_KEYS[subSlug ?? ""] : PAGE_TITLE_KEYS[slug ?? ""];
-    const pageTitle = slug ? (sectionKey ? t(sectionKey) : brandName) : t(PAGE_TITLE_KEYS.home);
+    const sectionKey = workspacePageTitleKey(pathname);
+    const pageTitle = sectionKey ? t(sectionKey) : brandName;
     const balance = availableMicrocredits === null ? "--" : (availableMicrocredits / 1_000_000).toLocaleString(currentLocale(), { maximumFractionDigits: 2 });
 
     return (
@@ -60,6 +44,7 @@ export function WorkspaceTopBar({ sidebarOpen, onToggleSidebar }: { sidebarOpen:
             </nav>
             <WorkspaceTopBarExtensionSlot />
             <div className="app-workspace-topbar-actions">
+                <LanguageMenu />
                 {user ? <TopbarFeedbackButton /> : null}
                 {creditsEnabled ? (
                     <button type="button" className="app-workspace-topbar-credit-pill" aria-label={t("shell.openWallet", { balance })} onClick={() => openWorkspaceWallet()}>
