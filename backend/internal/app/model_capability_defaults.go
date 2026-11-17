@@ -64,6 +64,17 @@ func DefaultImageCapabilityConfig(protocol string, modelName string) *ImageCapab
 		image.TransparentBackground.Supported = false
 		image.ResponseFormat.Supported = false
 		image.OutputFormat.Supported = false
+		if modelName == seedream55Model {
+			image.References.MaxImages = 10
+			presets := seedream55ImagePresets()
+			var values []string
+			for _, preset := range presets {
+				values = append(values, preset.Size)
+			}
+			image.Size = ImageSizeConfig{Parameter: "size", Values: values, Default: "2048x2048", AllowCustom: true, Presets: presets}
+			image.Resolution = ImageResolutionConfig{Supported: true, Values: []string{"1k", "1.5k", "2k"}, Default: "2k"}
+			image.MaxOutputs = 1
+		}
 	case model.ChannelInterfaceVolcengineJiMengImage:
 		image.References.MaxImages = 14
 		image.References.MaskSupported = false
@@ -256,6 +267,15 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.Watermark = VideoBooleanConfig{}
 		video.Operations, video.DefaultOperation = []string{VideoProcessingOperationEnhance}, VideoProcessingOperationEnhance
 		video.Processing = &VideoProcessingConfig{FPSPolicy: VideoProcessingFPSKeepSource, MaxSourceSeconds: DefaultVideoProcessingMaxSourceSeconds}
+	case model.ChannelInterfaceType(VolcengineMediaKitVideoDepthProtocol):
+		video.References = VideoReferenceConfig{PromptMaxChars: DefaultVideoPromptMaxChars, MaxVideos: 1, MaxVideoDuration: MediaKitDepthMaxSourceSeconds}
+		video.Duration = VideoDurationConfig{Selection: "range", Min: 1, Max: MediaKitDepthMaxSourceSeconds, Step: 1, Default: 5}
+		video.Ratios, video.DefaultRatio = []string{}, ""
+		video.Resolutions, video.DefaultResolution = []string{}, ""
+		video.GenerateAudio = VideoBooleanConfig{}
+		video.Watermark = VideoBooleanConfig{}
+		video.Operations, video.DefaultOperation = []string{VideoProcessingOperationDepth}, VideoProcessingOperationDepth
+		video.Processing = &VideoProcessingConfig{FPSPolicy: VideoProcessingFPSKeepSource, MaxSourceSeconds: MediaKitDepthMaxSourceSeconds}
 	}
 	return &ModelCapabilityConfig{Version: 1, Text: text, Image: DefaultImageCapabilityConfig(protocol, modelName), Video: video}
 }
